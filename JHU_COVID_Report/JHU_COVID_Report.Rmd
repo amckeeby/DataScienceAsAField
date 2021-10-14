@@ -1,0 +1,350 @@
+---
+title: "JHU_COVID19_Data"
+author: "Adam McKeeby"
+date: "10/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+
+#### Pull down CSV files  
+```{r pull down data}
+baseURI <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+lookupURL <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+csvFiles <- c(
+    "time_series_covid19_confirmed_US.csv",
+    "time_series_covid19_deaths_US.csv",
+    "time_series_covid19_confirmed_global.csv",
+    "time_series_covid19_deaths_global.csv"
+)
+
+urlVec <- str_c(baseURI, csvFiles)
+
+```
+
+
+#### Store CSV data in memory  
+```{r load data}
+usCases <- read_csv(urlVec[1], show_col_types = FALSE)
+usDeaths <- read_csv(urlVec[2], show_col_types = FALSE)
+globalCases <- read_csv(urlVec[3], show_col_types = FALSE)
+globalDeaths <- read_csv(urlVec[4], show_col_types = FALSE)
+uidLookup <- read_csv(lookupURL, show_col_types = FALSE)
+```
+
+#### Data Description  
+Data currently contains:
+- Province/State    
+- Country/Region  
+- Lat  
+- Long  
+
+#### Tidy data and add desired columns  
+
+```{r tidy up data}
+# Pivot dates, format dates, add month and year columns, join with UID data, drop NA rows, add cases/1000 column
+tidyGC <- globalCases %>% 
+    drop_na(Lat) %>%
+    rename(Country_Region = `Country/Region`) %>%
+    pivot_longer( cols = -c(`Province/State`, Country_Region, Lat, Long), 
+                  names_to = "date",
+                  values_to = "cases"
+    ) %>%
+    mutate(date = mdy(date)) %>%
+    mutate(month = month(date)) %>%
+    mutate(year = year(date)) %>%
+    left_join(uidLookup, by = c("Country_Region", "Lat")) %>%
+    select(-c(UID, FIPS)) %>%
+    select(Country_Region, Lat, date, month, year, cases, Population) %>%
+    drop_na() %>%
+    mutate(cases_per_thou = 1000 * cases / Population)
+
+# Pivot dates, format dates, add month and year columns, join with UID data, drop NA rows, add cases/1000 column
+tidyGD <- globalDeaths %>% 
+    drop_na(Lat) %>%
+    rename(Country_Region = `Country/Region`) %>%
+    pivot_longer( cols = -c(`Province/State`, Country_Region, Lat, Long), 
+                  names_to = "date",
+                  values_to = "cases"
+    ) %>%
+    mutate(date = mdy(date)) %>%
+    mutate(month = month(date)) %>%
+    mutate(year = year(date)) %>%
+    left_join(uidLookup, by = c("Country_Region", "Lat")) %>%
+    select(-c(UID, FIPS)) %>%
+    select(Country_Region, Lat, date, month, year, cases, Population) %>%
+    drop_na() %>%
+    mutate(deaths_per_thou = 1000 * cases / Population)
+
+```
+
+
+#### Separate data into regional buckets  
+```{r bucket countries by latitude}
+# setup latitude region bounds
+tropicOfCancer <- 23.436720
+tropicOfCapricorn <- -23.436720
+subNTropic <- 35.0
+subSTropic <- -35.0
+northTemperate <- 66.50
+southTemperate <- -66.50
+
+# separate each row into Tropics/SubTropics/Temperate/Polar regions for global cases
+tidyGC["region"] <- case_when(
+    (tidyGC["Lat"] > tropicOfCapricorn) & (tidyGC["Lat"] < tropicOfCancer) ~ "Tropics",   
+    (tidyGC["Lat"] > tropicOfCancer) & (tidyGC["Lat"] < subNTropic) ~ "SubTropics",
+    (tidyGC["Lat"] > subSTropic) & (tidyGC["Lat"] < tropicOfCapricorn) ~ "SubTropics",
+    (tidyGC["Lat"] > subNTropic) & (tidyGC["Lat"] < northTemperate ) ~ "Temperate",
+    (tidyGC["Lat"] > southTemperate ) & (tidyGC["Lat"] < subSTropic) ~ "Temperate",
+    (tidyGC["Lat"] > northTemperate) ~ "Polar",
+    (tidyGC["Lat"] < southTemperate)  ~ "Polar",
+) 
+    
+# separate each row into Tropics/SubTropics/Temperate/Polar regions for global deaths
+tidyGD["region"] <- case_when(
+    (tidyGC["Lat"] > tropicOfCapricorn) & (tidyGC["Lat"] < tropicOfCancer) ~ "Tropics",   
+    (tidyGC["Lat"] > tropicOfCancer) & (tidyGC["Lat"] < subNTropic) ~ "SubTropics",
+    (tidyGC["Lat"] > subSTropic) & (tidyGC["Lat"] < tropicOfCapricorn) ~ "SubTropics",
+    (tidyGC["Lat"] > subNTropic) & (tidyGC["Lat"] < northTemperate ) ~ "Temperate",
+    (tidyGC["Lat"] > southTemperate ) & (tidyGC["Lat"] < subSTropic) ~ "Temperate",
+    (tidyGC["Lat"] > northTemperate) ~ "Polar",
+    (tidyGC["Lat"] < southTemperate)  ~ "Polar",
+) 
+
+# filter out rows with 0 population and 0 cases
+gcSummary <- tidyGC %>%
+    group_by(region) %>%
+    summarize(cases = max(cases), 
+              population = max(Population),
+              cases_per_thou = 1000 * cases / population
+    ) %>%
+    filter(cases > 0, population > 0)
+
+gdSummary <- tidyGD %>%
+    group_by(region) %>%
+    summarize(deaths = max(cases), 
+              population = max(Population),
+              deaths_per_thou = 1000 * deaths / population
+    ) %>%
+    filter(deaths > 0, population > 0)
+```
+
+
+#### Create Models for each region  
+```{r models per region for cases}
+# Create grouped data sets and matching models for global cases
+
+temperateGC <- tidyGC %>% 
+    filter(region == "Temperate") %>%
+    group_by(date) %>%
+    summarise(
+        mean_cpt = mean(cases_per_thou), 
+        cases_per_thou = sum(cases_per_thou),
+        n = n(),
+        region = "Temperate"
+    )
+tempModel <- glm(mean_cpt ~ cases_per_thou / date, data = temperateGC)
+temperateGC <- temperateGC %>% mutate(prediction = predict(tempModel))
+
+polarGC <- tidyGC %>% 
+    filter(region == "Polar") %>%
+    group_by(date) %>%
+    summarise(
+        mean_cpt = mean(cases_per_thou), 
+        cases_per_thou = sum(cases_per_thou),
+        n = n(),
+        region = "Polar"
+    )
+polModel <- glm(mean_cpt ~ cases_per_thou / date, data = polarGC)
+polarGC <- polarGC %>% mutate(prediction = predict(polModel))
+
+tropGC <- tidyGC %>% 
+    filter(region == "Tropics") %>%
+    group_by(date) %>%
+    summarise(
+        mean_cpt = mean(cases_per_thou), 
+        cases_per_thou = sum(cases_per_thou),
+        n = n(),
+        region = "Tropics"
+    )
+tropModel <- glm(mean_cpt ~ cases_per_thou / date, data = tropGC)
+tropGC <- tropGC %>% mutate(prediction = predict(tropModel))
+
+
+subGC <- tidyGC %>% 
+    filter(region == "SubTropics") %>%
+    group_by(date) %>%
+    summarise(
+        mean_cpt = mean(cases_per_thou), 
+        cases_per_thou = sum(cases_per_thou),
+        n = n(),
+        region = "SubTropics"
+    )
+subModel <- glm(mean_cpt ~ cases_per_thou / date, data = subGC)
+subGC <- subGC %>% mutate(prediction = predict(subModel))
+
+```
+
+
+### Research Questions/ Questions of Interest:  
+Does climate affect the spread and how deadly COVID is in humans?  
+Specifically does COVID spread less effectively the warmer the climate?  
+
+### Hypothesis:  
+As COVID spreads closer to the equator, it will be less effective at spreading and causing death.  
+
+### Analyses  
+For the sake of binning for analysis, the latitude regions will be defined as:  
+- Tropics: Between Tropic Of Cancer(23.436720) and Tropic Of Capricorn(-23.436720)  
+- SubTropics: Between Tropic of Cancer and latitude 35.0 degrees. Between Tropic of Capricorn and latitude -35.0 degrees  
+- Temperate:  Latitudes 35.0 to 66.50 degrees and -35.0 to -66.50 degrees
+- Polar: Latitude 66.5 degrees and up. Latitude -66.5 degrees and below  
+  
+NOTE: Linears models are in red on the graphs
+
+```{r graph Temperate global cases}
+ggplot(data = tidyGC %>% filter(region == "Temperate")) +
+geom_point( aes(x=date, y=cases_per_thou ), shape = ".") + 
+geom_line(data = temperateGC, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Cases in the World in Temperate Region")
+```
+
+  
+```{r graph Tropics global cases}
+ggplot(data = tidyGC %>% filter(region == "Tropics")) +
+geom_point( aes(x=date, y=cases_per_thou ), shape = ".") + 
+geom_line(data = tropGC, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Cases in the World in Tropics Region")
+```
+
+  
+```{r graph SubTropics global cases}
+ggplot(data = tidyGC %>% filter(region == "SubTropics")) +
+geom_point( aes(x=date, y=cases_per_thou ), shape = ".") + 
+geom_line(data = subGC, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Cases in the World in SubTropics Region")
+```
+
+  
+```{r graph Polar global cases}
+ggplot(data = tidyGC %>% filter(region == "Polar")) +
+geom_point( aes(x=date, y=cases_per_thou), shape = ".") + 
+geom_line(data = polarGC, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Cases in the World in Polar Region")
+```
+
+### Analysis of COVID Cases throughout the world based on Latitude Region
+- The main density of countries in the temperate region tended to have higher cases per thousand than polar, tropics and subtropics.  
+- Countries in the polar region had a very low sample size. Some of those countries were split across the polar/temperate border with a bulk of their population density in the temperate area (Canada is a good example of this happening )  
+- The Temperate region had the most countries in it's group, followed by tropics, subtropics and polar.  
+- As the latitude regions moved south, the linear models predicted less cases per thousand with the exception of the polar region  
+
+  
+```{r models per region for deaths}
+# Create grouped datasets and matching models for global deaths
+temperateGD <- tidyGD %>% 
+    filter(region == "Temperate") %>%
+    group_by(date) %>%
+    summarise(
+        mean_dpt = mean(deaths_per_thou), 
+        deaths_per_thou = sum(deaths_per_thou),
+        n = n(),
+        region = "Temperate"
+    )
+tempDModel <- glm(mean_dpt ~ deaths_per_thou / date, data = temperateGD)
+temperateGD <- temperateGD %>% mutate(prediction = predict(tempDModel))
+
+polarGD <- tidyGD %>% 
+    filter(region == "Polar") %>%
+    group_by(date) %>%
+    summarise(
+        mean_dpt = mean(deaths_per_thou), 
+        deaths_per_thou = sum(deaths_per_thou),
+        n = n(),
+        region = "Polar"
+    )
+polDModel <- glm(mean_dpt ~ deaths_per_thou / date, data = polarGD)
+polarGD <- polarGD %>% mutate(prediction = predict(polDModel))
+
+tropGD <- tidyGD %>% 
+    filter(region == "Tropics") %>%
+    group_by(date) %>%
+    summarise(
+        mean_dpt = mean(deaths_per_thou), 
+        deaths_per_thou = sum(deaths_per_thou),
+        n = n(),
+        region = "Tropics"
+    )
+tropDModel <- glm(mean_dpt ~ deaths_per_thou / date, data = tropGD)
+tropGD <- tropGD %>% mutate(prediction = predict(tropDModel))
+
+
+subGD <- tidyGD %>% 
+    filter(region == "SubTropics") %>%
+    group_by(date) %>%
+    summarise(
+        mean_dpt = mean(deaths_per_thou), 
+        deaths_per_thou = sum(deaths_per_thou),
+        n = n(),
+        region = "SubTropics"
+    )
+subDModel <- glm(mean_dpt ~ deaths_per_thou / date, data = subGD)
+subGD <- subGD %>% mutate(prediction = predict(subDModel))
+
+```
+
+  
+```{r graph Temperate global deaths}
+ggplot(data = tidyGD %>% filter(region == "Temperate")) +
+geom_point( aes(x=date, y=deaths_per_thou ), shape = ".") + 
+geom_line(data = temperateGD, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Deaths in the World in Temperate Region")
+```
+
+  
+```{r graph Tropical global deaths}
+ggplot(data = tidyGD %>% filter(region == "Tropics")) +
+geom_point( aes(x=date, y=deaths_per_thou ), shape = ".") + 
+geom_line(data = tropGD, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Deaths in the World in Tropics Region")
+```
+
+  
+```{r graph SubTropical global deaths}
+ggplot(data = tidyGD %>% filter(region == "SubTropics")) +
+geom_point( aes(x=date, y=deaths_per_thou ), shape = ".") + 
+geom_line(data = subGD, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Deaths in the World in SubTropics Region")
+```
+
+  
+```{r graph Polar global deaths}
+ggplot(data = tidyGD %>% filter(region == "Polar")) +
+geom_point( aes(x=date, y=deaths_per_thou ), shape = ".") + 
+geom_line(data = polarGD, aes(x=date, y=prediction, color = "red")) +
+labs(title = "COVID Deaths in the World in Polar Region")
+```
+
+
+### Analysis of COVID Deaths throughout the world based on Latitude Region
+- Other than some outlier countries, the models for deaths per thousand across tropics and subtropics stayed below .5  
+- Polar region had so little variability in reported deaths that they formed step functions with very low deaths per thousand  
+- Polar region is made up of Denmark and Canada. Canada specifically is problematic in the polar region since the majority of its population and healthcare infrastructure is in the temperate region  
+- The model for deaths per thousand in temperate region peaked at ~1.25  
+- As the latitude regions moved away from the temperate region, the linear models predicted less deaths per thousand  
+ 
+### Conclusion
+ 
+ Based on this data and analysis, it appears that as we move closer to the equator, COVID spread and deaths decrease on average with the exception of the polar region. So the hypothesis is only partially upheld.
+ 
+ There are a few problems with bias and the analysis though. For example, I think that since the "polar" region only consists of two countries( Denmark and Canada ), those graphs and analysis are probably oversampled. Canada specifically poses a problem because it was split between the temperate and polar regions, with the bulk of its population in the temperate region. 
+ Also, this sort of analysis and (arguably mismatched) dataset is not ideal for the research question question. First, climate is not so simple that it can just be binned efficiently within just latitude bans on the Earth. At best, it only provides very general trends of warm and wet climates as you move closer to the equator. Secondly, the epidemiological behaviors of COVID spread is difficult to confine to just one dimension. There are many factors at play, such as how cultures, health care policy, health care infrastructure, country affluency, weather patterns(especially those that differ between northern and southern hemispheres like La Nina/El Nino), when a country/population was exposed, governments, etc have responded to the spread of COVID that can drastically affect the results, and therefore analysis.
+ 
+ All of the factors I just listed can introduce major bias in how the results are interpreted and reported. For example, with regards to the United States culture and government, there are communities and organizations that at different times refuse(d) the existence of COVID or refused to change health care policy, receive vaccines, etc which all can adversely affect reporting/sampling of the data and change the results for the United States specifically. Multiply all that variability by all the different countries and their types of governments and cultures, and that alone causes these analyses to become significantly more complex, nuanced and flawed.  
+ So it is important to contextualize these data and analyses, that although the general trends seem to be that climate and weather do seem to have an impact it is an incomplete picture. 
+ 

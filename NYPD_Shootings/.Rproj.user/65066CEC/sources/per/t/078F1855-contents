@@ -1,0 +1,144 @@
+---
+title: "NYPD Shooting Report Demographics"
+author: "Adam McKeeby"
+date: "9/15/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+
+#### Pull down CSV file  
+```{r download_data}
+nypd_url  <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_csv <- read_csv(nypd_url, col_select = c("OCCUR_DATE", "OCCUR_TIME", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE"))
+
+```
+
+
+#### Tidy up data  
+```{r tidy data}
+nypd_csv[nypd_csv==""] <- "UNKNOWN"
+nypd_csv[is.na(nypd_csv)] <- "UNKNOWN"
+formattedCSV <- nypd_csv %>%
+    mutate(OCCUR_DATE = mdy(OCCUR_DATE), OCCUR_TIME = hms(OCCUR_TIME)) %>%
+    mutate(P_AGE_GROUP = recode(PERP_AGE_GROUP,"<18" = 1,"18-24" = 2, "25-44" = 3, "45-64" = 4, "65+" = 5, .default = -1)) %>%
+    mutate(V_AGE_GROUP = recode(VIC_AGE_GROUP,"<18" = 1,"18-24" = 2, "25-44" = 3, "45-64" = 4, "65+" = 5, .default = -1)) %>%
+    mutate(MONTH = month(OCCUR_DATE))
+filteredCSV <- filter(formattedCSV, V_AGE_GROUP > 0)
+filteredCSV <- filter(filteredCSV, P_AGE_GROUP > 0)
+filteredCSV <- filter(filteredCSV, PERP_SEX %in% c("M", "F"))
+filteredCSV <- filter(filteredCSV, VIC_SEX %in% c("M", "F"))
+filteredCSV["Perp_vs_Vic"] <- case_when(
+  filteredCSV["P_AGE_GROUP"] < filteredCSV["V_AGE_GROUP"] ~ "LESS",
+  filteredCSV["P_AGE_GROUP"] > filteredCSV["V_AGE_GROUP"] ~ "GREATER",
+  filteredCSV["P_AGE_GROUP"] %% filteredCSV["V_AGE_GROUP"] == 0 ~ "SAME",
+)
+
+filteredCSV["PerpSex_vs_VicSex"] <- case_when(
+  filteredCSV["PERP_SEX"]  == "M" & filteredCSV["VIC_SEX"] == "M" ~ "Male->Male",
+  filteredCSV["PERP_SEX"] == "M" & filteredCSV["VIC_SEX"] == "F" ~ "Male->Female",
+  filteredCSV["PERP_SEX"] == "F" & filteredCSV["VIC_SEX"] == "F" ~ "Female->Female",
+  filteredCSV["PERP_SEX"] == "F" & filteredCSV["VIC_SEX"] == "M" ~ "Female->Male",
+)
+summary(filteredCSV) 
+
+```
+
+### Research Questions:  
+#### Question 1: 
+In the NYPD shooting data, what sex is most likely to be the shooter and what sex is the victim?
+
+
+#### Hypothesis 1: 
+- If a shooting is reported by/to the NYPD, the shooter will most likely be male and the victim has an equal chance of being male or female.
+
+#### Distribution of sex demographic in shooting data:
+```{r Visualize first distribution}
+ggplot(data = filteredCSV, mapping = aes(x=PerpSex_vs_VicSex),) +
+  geom_bar( stat="count") +
+  labs(title = "Count of NY Shootings based on Shooter/Victim demographic") + 
+  ylab("Count") + xlab("Month")
+
+```
+
+#### Question 2:
+Does the amount of shootings that occur vary over the course of the year or is it relatively constant?
+
+#### Hypothesis 2: 
+- Over the course of the year, shootings across the Shooter/Victim combinations will be relatively constant.
+
+#### Distribution of sex demographic in shooting data:
+```{r Model and visualize}
+countPerMonth <- filteredCSV %>% count(MONTH, PerpSex_vs_VicSex)
+model <- glm(n ~ PerpSex_vs_VicSex / MONTH, data = countPerMonth)
+countPerMonth <- countPerMonth %>% mutate(prediction = predict(model))
+countPerMonth %>% ggplot() + 
+    geom_line(aes(x=MONTH, y=n, color = PerpSex_vs_VicSex)) +
+    geom_line(aes(x=MONTH, y=prediction, color = PerpSex_vs_VicSex)) +
+    labs(title = "NY Shootings based on Shooter/Victim trends", fill = "Perp->Vitim") + 
+    ylab("Count") + xlab("Month")
+```
+
+#### Question 3: 
+What age groups was the shooter in relative to the victim?
+
+#### Hypothesis 3: 
+- If a shooting is reported by/to the NYPD, the age groups of shooter and victims will most likely be the same, with the lowest incidence of victims being older than the shooter.
+
+#### Distribution of Shootings Across Age/Sex groups:
+
+The following is a graph of the age difference between the shooter and victim.  
+- GREATER: Signifies that the victim was older than the shooter.  
+- LESS: means that the shooter was younger than the victim  
+- SAME: is that the victim and shooter were in the same age group  
+```{r Visualize distribution Sex and Age}
+ggplot(data = filteredCSV, mapping = aes(x=Perp_vs_Vic)) +
+  facet_wrap(~PerpSex_vs_VicSex, scales = 'free_y') +
+  geom_bar(stat="count") +
+  labs(title = "Distribution of NY Shootings Across Age/Sex groups") + 
+  ylab("Count") + xlab("Shooter -> Victim Age group comparison")
+```
+
+## Analysis
+- Significantly more reported shooters were male than female. 
+- Significantly more reported victims were male (but not as sharp a difference as between shooter demographic)
+- In the shootings by month plot for Male -> Male, there are noticeable dips in the winter months(particularly the months with the highest precipitation)
+- In the shootings by month plot for Male -> Male, there is a very sharp spike in the warmer months
+- By far, most of the reported shootings took place between 2 male subjects. 
+- Male perpetrators were significantly more likely, regardless of victim sex.
+- Most reported shootings occurred between people within the same age group in general
+- Across all Perpetrator vs Victim sex combinations, distributions followed the same pattern: 
+1 Most shootings: Perpetrator and Victim were same age group.
+2 Least shootings: Perpetrator was younger than the victim.
+
+#### Additional Questions
+- Is there any variability with time of day? 
+- Is there any variability with time of year? 
+- Did the perpetrator and victim know each other? Were they family? Were they in a relationship? How many were suspected to be related to organized crime? (See if we can further contextualize the violence to provide insights)
+- Given larger sample sizes for shootings other than Male -> Male, what trends emerge over the course of a year? Would they be similar to the parabolic trend in the Male -> Male case?
+- How many of the reported shootings are reported by the NYPD vs to the NYPD from the public? If there is a large disparity between the two, could that be a source of bias?
+- How many shootings take place that are not reported by/to the NYPD? Why? Would those missed sample adversely affect the findings in the current data set?
+
+## Conclusion 
+
+For the first research question, the hypothesis was shown to be at least half wrong based on this data set. There was significantly more male shooters than female. However, there was a significant difference between the two victim demographics. Most reported shootings took place between two male subjects, with female victims being a distant second. I found it quite surprising how far apart the differences between Male->Male and Male->Female aggregates was. I was expecting results that were much more comparable.  
+
+For the second research question, the hypothesis was wrong for Male->Male shootings and not disproved for all other groupings. I think that the sample sizes for all cases that were not in the Male->Male group were too small to really manifest any real trends and probably has an oversampling bias. As for the Male->Male group, we see peaks in the summer months, and troughs in the fall/winter months. My follow on hypothesis as to why the peaks and troughs where they are, for the much larger sample size group, is that more shootings occur in the summer because more people are out socializing and interacting vs winter which has the opposite effect. Less interactions leads to less opportunities for conflict between people with guns.  
+
+For the final research question, the hypothesis held up for all groups. Although I think the same argument about sample size from the first research question is a problem, the same trend persisted across all groups regardless. My first follow up hypothesis, is that for the most frequent shootings group, the shooter and victim were a part of the same age group, that this is because people spend most of their time socializing with people their own age(other than family). My second follow up hypothesis is that the least frequent group, where the victim is older than the shooter, is that it is lower frequency than the other two groups because the people that could be potential shooters interact with most who are older than them are family and therefore less likely to get into an incident.  
+
+A source of bias that could skew the results of all the graphs is uneven reporting of shootings. Without knowing the source of shooting reports, it is difficult contextualize these analyses. For example, if most reports were done by police and were mostly sampled from organized crime, there would potentially be over sampling of Male to Male shootings. (Based on some surveys from a few searches, most gang or crime group members are male. To further complicate things, these sources also have their own implicit bias obviously)  
+
+One way I tried to address my bias about these analyses is to make any possible bias (such as availability and confirmation bias) I may have and think of into hypothesis. By framing these ideas as hypothesis anyone can approach them the same that is approached in the scientific process. It is easy to disprove a hypothesis, and difficult to uphold it across many contexts and tests.   
+
+
+
+
+
