@@ -1,6 +1,6 @@
 {
     "id": "078F1855",
-    "path": "C:/Users/Adam/workspace/DS_Field/NYPD_Shootings/NYPD_Shootings.Rmd",
+    "path": "C:/Users/Adam/workspace/DS_Field/DataScienceAsAField/NYPD_Shootings/NYPD_Shootings.Rmd",
     "project_path": "NYPD_Shootings.Rmd",
     "type": "r_markdown",
     "hash": "3785090357",
@@ -12,8 +12,8 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "23,0",
-        "scrollLine": "0"
+        "cursorPosition": "77,11",
+        "scrollLine": "59"
     },
     "folds": "",
     "lastKnownWriteTime": 1634170278,
